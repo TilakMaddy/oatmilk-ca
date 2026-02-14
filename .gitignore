@@ -1,0 +1,10 @@
+# Private keys — NEVER commit
+*.key
+
+# Generated certs and signing artifacts
+*.crt
+*.csr
+*.srl
+*.pem
+
+*.cnf
