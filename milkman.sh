@@ -5,6 +5,7 @@ BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS_DIR="$BASE_DIR/scripts"
 CA_DIR="$BASE_DIR/oatca"
 SERVERS_DIR="$BASE_DIR/servers"
+REMOTES_DIR="$BASE_DIR/remotes"
 
 BOLD="\033[1m"
 DIM="\033[2m"
@@ -32,24 +33,28 @@ run_script() {
 
   case "$script" in
     init-ca.sh)
-      echo -e "  ${BOLD}1${RESET}  Initialize the CA        (if CA doesn't exist)"
-      echo -e "  ${BOLD}5${RESET}  Rotate CA + all certs    (if CA exists and you want to regenerate)"
+      echo -e "  ${BOLD}1${RESET}  Initialize the CA          (if CA doesn't exist)"
+      echo -e "  ${BOLD}2 → 4${RESET}  Rotate CA + all certs  (if CA exists and you want to regenerate)"
       ;;
     issue-cert.sh)
       if [[ ! -f "$CA_DIR/ca.crt" || ! -f "$CA_DIR/ca.key" ]]; then
         echo -e "  ${BOLD}1${RESET}  Initialize the CA first, then try again"
       else
-        echo -e "  ${BOLD}2${RESET}  Issue a new server cert  (fresh key + cert)"
-        echo -e "  ${BOLD}3${RESET}  Renew a server cert      (keep existing key)"
+        echo -e "  ${BOLD}2 → 1${RESET}  Issue a new server cert  (fresh key + cert)"
+        echo -e "  ${BOLD}2 → 2${RESET}  Renew a server cert      (keep existing key)"
       fi
       ;;
     rotate-ca.sh)
-      echo -e "  ${BOLD}1${RESET}  Initialize the CA        (if starting fresh)"
-      echo -e "  ${BOLD}5${RESET}  Rotate again             (if it was interrupted)"
+      echo -e "  ${BOLD}1${RESET}  Initialize the CA          (if starting fresh)"
+      echo -e "  ${BOLD}2 → 4${RESET}  Rotate again             (if it was interrupted)"
       ;;
     trust-ca.sh)
-      echo -e "  ${BOLD}8${RESET}  Trust / Untrust CA       (try again)"
-      echo -e "  ${BOLD}1${RESET}  Initialize the CA        (if CA doesn't exist)"
+      echo -e "  ${BOLD}4${RESET}  Trust / Untrust CA         (try again)"
+      echo -e "  ${BOLD}1${RESET}  Initialize the CA          (if CA doesn't exist)"
+      ;;
+    remote-sync.sh)
+      echo -e "  ${BOLD}5${RESET}  Remote sync                (try again)"
+      echo -e "  ${BOLD}1${RESET}  Initialize the CA          (if CA doesn't exist)"
       ;;
   esac
 
@@ -68,25 +73,28 @@ print_header() {
 }
 
 print_status() {
-  # CA status
+  # ── CA ──
+  echo -e "  ${BOLD}CA${RESET}"
   if [[ -f "$CA_DIR/ca.crt" && -f "$CA_DIR/ca.key" ]]; then
     local ca_expiry
     ca_expiry=$(openssl x509 -in "$CA_DIR/ca.crt" -noout -enddate 2>/dev/null | sed 's/notAfter=//')
-    echo -e "  ${GREEN}CA${RESET}  $ca_expiry"
+    echo -e "    ${GREEN}Expires${RESET}  $ca_expiry"
 
     # Trust status (delegates to trust-ca.sh for platform detection)
     local trust_output
     trust_output=$("$SCRIPTS_DIR/trust-ca.sh" --check 2>&1 || true)
     if echo "$trust_output" | grep -q "NOT TRUSTED"; then
-      echo -e "  ${YELLOW}Not trusted${RESET}  in system trust store ${DIM}(option 8 to fix)${RESET}"
+      echo -e "    ${YELLOW}Not trusted${RESET}  in system trust store ${DIM}(option 4 to fix)${RESET}"
     elif echo "$trust_output" | grep -q "TRUSTED"; then
-      echo -e "  ${GREEN}Trusted${RESET}  in system trust store"
+      echo -e "    ${GREEN}Trusted${RESET}  in system trust store"
     fi
   else
-    echo -e "  ${RED}CA${RESET}  not initialized"
+    echo -e "    ${RED}Not initialized${RESET}"
   fi
+  echo ""
 
-  # Server certs
+  # ── Certificates ──
+  echo -e "  ${BOLD}Certificates${RESET}"
   local count=0
   if [[ -d "$SERVERS_DIR" ]]; then
     for crt in "$SERVERS_DIR"/*/server.crt; do
@@ -98,12 +106,45 @@ print_status() {
       local domains
       domains=$(openssl x509 -in "$crt" -noout -ext subjectAltName 2>/dev/null \
         | grep -oE 'DNS:[^ ,]+' | sed 's/DNS://g' | tr '\n' ' ')
-      echo -e "  ${CYAN}$name${RESET}  $domains ${DIM}expires $expiry${RESET}"
+      echo -e "    ${CYAN}$name${RESET}  $domains ${DIM}expires $expiry${RESET}"
       count=$((count + 1))
     done
   fi
   if [[ $count -eq 0 ]]; then
-    echo -e "  ${DIM}No server certs issued yet${RESET}"
+    echo -e "    ${DIM}No server certs issued yet${RESET}"
+  fi
+  echo ""
+
+  # ── Remotes ──
+  echo -e "  ${BOLD}Remotes${RESET}"
+  local rcount=0
+  if [[ -d "$REMOTES_DIR" ]]; then
+    for rconf in "$REMOTES_DIR"/*/remote.conf; do
+      [[ -f "$rconf" ]] || continue
+      local rname rhost
+      rname=$(basename "$(dirname "$rconf")")
+      rhost=$(grep '^HOST=' "$rconf" | cut -d= -f2-)
+      local rsync_info=""
+      local rsync_conf
+      rsync_conf="$(dirname "$rconf")/last-sync.conf"
+      if [[ -f "$rsync_conf" ]]; then
+        local rsync_time
+        rsync_time=$(grep '^SYNC_TIME=' "$rsync_conf" | cut -d= -f2-)
+        local rsync_servers
+        rsync_servers=$(grep '^SYNC_SERVERS=' "$rsync_conf" | cut -d= -f2-)
+        local scount
+        # shellcheck disable=SC2086
+        scount=$(echo $rsync_servers | wc -w | tr -d ' ')
+        rsync_info="${DIM}synced $rsync_time ($scount server(s))${RESET}"
+      else
+        rsync_info="${DIM}never synced${RESET}"
+      fi
+      echo -e "    ${YELLOW}↗ $rname${RESET}  $rhost  $rsync_info"
+      rcount=$((rcount + 1))
+    done
+  fi
+  if [[ $rcount -eq 0 ]]; then
+    echo -e "    ${DIM}No remotes registered${RESET}"
   fi
   echo ""
 }
@@ -113,13 +154,11 @@ prompt_choice() {
   echo -e "  ${BOLD}What do you want to do?${RESET}" >&2
   echo "" >&2
   echo -e "  ${BOLD}1${RESET}  Initialize the CA ${DIM}(first time)${RESET}" >&2
-  echo -e "  ${BOLD}2${RESET}  Issue a new server cert" >&2
-  echo -e "  ${BOLD}3${RESET}  Renew a server cert ${DIM}(keep existing server.key)${RESET}" >&2
-  echo -e "  ${BOLD}4${RESET}  Re-issue a server cert ${DIM}(new server.key + cert)${RESET}" >&2
-  echo -e "  ${BOLD}5${RESET}  Rotate CA + all server certs" >&2
-  echo -e "  ${BOLD}6${RESET}  Verify a server cert" >&2
-  echo -e "  ${BOLD}7${RESET}  ${RED}Nuke${RESET} ${DIM}(delete certs and keys)${RESET}" >&2
-  echo -e "  ${BOLD}8${RESET}  Trust / Untrust CA in system trust store" >&2
+  echo -e "  ${BOLD}2${RESET}  Certificates ${DIM}(issue, renew, rotate)${RESET}" >&2
+  echo -e "  ${BOLD}3${RESET}  Verify a server cert" >&2
+  echo -e "  ${BOLD}4${RESET}  Trust / Untrust CA in system trust store" >&2
+  echo -e "  ${BOLD}5${RESET}  Remote sync ${DIM}(push certs to SSH targets)${RESET}" >&2
+  echo -e "  ${BOLD}6${RESET}  ${RED}Nuke${RESET} ${DIM}(delete certs and keys)${RESET}" >&2
   echo -e "  ${BOLD}q${RESET}  Quit" >&2
   echo "" >&2
   read -rp "  > " choice
@@ -137,7 +176,7 @@ pick_server() {
   if [[ ${#servers[@]} -eq 0 ]]; then
     echo "" >&2
     echo -e "  ${RED}No existing servers found.${RESET}" >&2
-    echo -e "  Issue a cert first (option ${BOLD}2${RESET})." >&2
+    echo -e "  Issue a cert first (option ${BOLD}2${RESET} → ${BOLD}1${RESET})." >&2
     return 1
   fi
 
@@ -364,7 +403,7 @@ do_init_ca() {
   if [[ -f "$CA_DIR/ca.key" ]]; then
     echo ""
     echo -e "  ${YELLOW}CA already exists.${RESET}"
-    echo -e "  Use option ${BOLD}5${RESET} (Rotate) to regenerate. Or ${BOLD}q${RESET} to go back."
+    echo -e "  Use option ${BOLD}2${RESET} → ${BOLD}4${RESET} (Rotate) to regenerate. Or ${BOLD}q${RESET} to go back."
     wait_for_key
     return
   fi
@@ -399,7 +438,7 @@ do_verify() {
   local crt="$SERVERS_DIR/$server/server.crt"
   if [[ ! -f "$crt" ]]; then
     echo -e "  ${RED}No cert found for $server.${RESET}"
-    echo -e "  Issue a cert first (option ${BOLD}2${RESET})."
+    echo -e "  Issue a cert first (option ${BOLD}2${RESET} → ${BOLD}1${RESET})."
     wait_for_key
     return
   fi
@@ -410,7 +449,7 @@ do_verify() {
     echo -e "  ${GREEN}Valid${RESET}"
   else
     echo -e "  ${RED}Invalid — cert may have been signed by a different CA.${RESET}"
-    echo -e "  Re-issue it (option ${BOLD}4${RESET}) or rotate everything (option ${BOLD}5${RESET})."
+    echo -e "  Re-issue it (option ${BOLD}2${RESET} → ${BOLD}3${RESET}) or rotate everything (option ${BOLD}2${RESET} → ${BOLD}4${RESET})."
   fi
 
   echo ""
@@ -465,7 +504,7 @@ do_nuke() {
           fi
         done
         echo -e "  ${GREEN}All server certs, keys, and configs deleted.${RESET}"
-        echo -e "  ${DIM}Issue new certs with option ${BOLD}2${RESET}${DIM}.${RESET}"
+        echo -e "  ${DIM}Issue new certs with option ${BOLD}2${RESET} → ${BOLD}1${RESET}${DIM}.${RESET}"
       else
         echo -e "  ${DIM}Cancelled.${RESET}"
       fi
@@ -546,6 +585,326 @@ do_trust() {
   wait_for_key
 }
 
+pick_remote() {
+  local label="$1"
+  local remotes=()
+  for rconf in "$REMOTES_DIR"/*/remote.conf; do
+    [[ -f "$rconf" ]] || continue
+    remotes+=("$(basename "$(dirname "$rconf")")")
+  done
+
+  if [[ ${#remotes[@]} -eq 0 ]]; then
+    echo "" >&2
+    echo -e "  ${RED}No remotes registered.${RESET}" >&2
+    echo -e "  Add one first (option ${BOLD}5${RESET} → ${BOLD}1${RESET})." >&2
+    return 1
+  fi
+
+  echo "" >&2
+  echo -e "  ${BOLD}$label${RESET}" >&2
+  echo "" >&2
+  for i in "${!remotes[@]}"; do
+    local rhost
+    rhost=$(grep '^HOST=' "$REMOTES_DIR/${remotes[$i]}/remote.conf" | cut -d= -f2-)
+    echo -e "  ${BOLD}$((i + 1))${RESET}  ${remotes[$i]}  ${DIM}($rhost)${RESET}" >&2
+  done
+  echo "" >&2
+  read -rp "  > " idx
+
+  if ! [[ "$idx" =~ ^[0-9]+$ ]] || (( idx < 1 || idx > ${#remotes[@]} )); then
+    echo -e "  ${RED}Invalid selection.${RESET}" >&2
+    return 1
+  fi
+
+  echo "${remotes[$((idx - 1))]}"
+}
+
+do_remote_add() {
+  echo ""
+  echo -e "  ${BOLD}Remote name${RESET} ${DIM}(e.g. prod-web, staging)${RESET}"
+  echo ""
+  read -rp "  > " rname
+
+  if [[ -z "$rname" ]]; then
+    echo -e "  ${RED}Remote name cannot be empty.${RESET}"
+    return
+  fi
+
+  echo ""
+  echo -e "  ${BOLD}Host${RESET} ${DIM}(e.g. root@192.168.1.10)${RESET}"
+  echo ""
+  read -rp "  > " rhost
+
+  if [[ -z "$rhost" ]]; then
+    echo -e "  ${RED}Host cannot be empty.${RESET}"
+    return
+  fi
+
+  echo ""
+  echo -e "  ${BOLD}SSH port${RESET} ${DIM}(default: 22)${RESET}"
+  echo ""
+  read -rp "  > " rport
+  rport="${rport:-22}"
+
+  echo ""
+  echo -e "  ${BOLD}SSH key path${RESET} ${DIM}(optional, press Enter to skip)${RESET}"
+  echo ""
+  read -rp "  > " rkey
+
+  local cmd_args=("$rname" --host "$rhost" --port "$rport")
+  if [[ -n "$rkey" ]]; then
+    cmd_args+=(--key "$rkey")
+  fi
+
+  echo ""
+  run_script remote-sync.sh --add "${cmd_args[@]}" || true
+}
+
+do_remote_remove() {
+  local rname
+  rname=$(pick_remote "Which remote to remove?") || return
+
+  echo ""
+  run_script remote-sync.sh --remove "$rname" || true
+}
+
+is_remote_synced() {
+  local name="$1"
+  local sync_conf="$REMOTES_DIR/$name/last-sync.conf"
+  [[ -f "$sync_conf" ]] || return 1
+
+  local SYNC_TIME="" SYNC_SERVERS="" SYNC_HASH=""
+  # shellcheck disable=SC1090
+  source "$sync_conf"
+  [[ -n "$SYNC_HASH" ]] || return 1
+
+  # Recompute current hash and compare
+  [[ -f "$CA_DIR/ca.crt" ]] || return 1
+  local servers=()
+  for crt in "$SERVERS_DIR"/*/server.crt; do
+    [[ -f "$crt" ]] || continue
+    servers+=("$(basename "$(dirname "$crt")")")
+  done
+  local current_hash
+  current_hash=$( {
+    cat "$CA_DIR/ca.crt"
+    for sname in $(printf '%s\n' "${servers[@]}" | sort); do
+      cat "$SERVERS_DIR/$sname/server.crt" "$SERVERS_DIR/$sname/server.key"
+    done
+  } | shasum -a 256 | cut -d' ' -f1 )
+
+  [[ "$SYNC_HASH" == "$current_hash" ]]
+}
+
+# Interactive multi-select picker for sync targets.
+# Returns space-separated list of selected remote names on stdout.
+# Navigation: j/k or ↑/↓, space to toggle, enter to confirm, q to cancel.
+pick_sync_targets() {
+  local remotes=() hosts=() synced=()
+
+  for rconf in "$REMOTES_DIR"/*/remote.conf; do
+    [[ -f "$rconf" ]] || continue
+    remotes+=("$(basename "$(dirname "$rconf")")")
+    hosts+=("$(grep '^HOST=' "$rconf" | cut -d= -f2-)")
+    if is_remote_synced "${remotes[-1]}"; then
+      synced+=("yes")
+    else
+      synced+=("no")
+    fi
+  done
+
+  if [[ ${#remotes[@]} -eq 0 ]]; then
+    echo -e "  ${RED}No remotes registered.${RESET}" >&2
+    echo -e "  Add one first (option ${BOLD}5${RESET} → ${BOLD}1${RESET})." >&2
+    return 1
+  fi
+
+  local any_stale=false
+  for flag in "${synced[@]}"; do
+    if [[ "$flag" == "no" ]]; then any_stale=true; break; fi
+  done
+
+  if ! $any_stale; then
+    echo -e "  ${GREEN}All remotes are up to date.${RESET}" >&2
+    return 1
+  fi
+
+  local n=${#remotes[@]}
+  local total=$((n + 1))   # index 0 = "All remotes"
+  local sel=()
+  local cur=0
+
+  for ((i=0; i<total; i++)); do sel+=(0); done
+
+  # Pre-select all stale remotes and "All"
+  sel[0]=1
+  for ((i=0; i<n; i++)); do
+    if [[ "${synced[$i]}" == "no" ]]; then sel[$((i+1))]=1; fi
+  done
+
+  tput civis 2>/dev/null   # hide cursor
+
+  echo "" >&2
+  echo -e "  ${BOLD}Select remotes to sync${RESET}" >&2
+
+  _draw_sync_picker() {
+    for ((i=0; i<total; i++)); do
+      local arrow="  "
+      [[ $i -eq $cur ]] && arrow="→ "
+
+      local box="[ ]"
+      [[ ${sel[$i]} -eq 1 ]] && box="[x]"
+
+      if [[ $i -eq 0 ]]; then
+        printf "  %s %s All remotes\033[K\n" "$arrow" "$box" >&2
+      else
+        local idx=$((i - 1))
+        if [[ "${synced[$idx]}" == "yes" ]]; then
+          printf "  %s \033[2m%s %s  %s (synced)\033[0m\033[K\n" "$arrow" "$box" "${remotes[$idx]}" "${hosts[$idx]}" >&2
+        else
+          printf "  %s \033[1m%s\033[0m %s  \033[2m%s\033[0m\033[K\n" "$arrow" "$box" "${remotes[$idx]}" "${hosts[$idx]}" >&2
+        fi
+      fi
+    done
+    echo -e "\033[K" >&2
+    echo -e "  ${DIM}↑↓/jk navigate  space toggle  enter sync  q back${RESET}\033[K" >&2
+  }
+
+  _draw_sync_picker
+  local redraw_up=$((total + 2))
+
+  while true; do
+    local key
+    IFS= read -rsn1 key
+
+    if [[ "$key" == $'\x1b' ]]; then
+      local seq
+      IFS= read -rsn2 seq
+      case "$seq" in
+        '[A') key='k' ;;
+        '[B') key='j' ;;
+      esac
+    fi
+
+    case "$key" in
+      k)
+        (( cur > 0 )) && cur=$((cur - 1))
+        ;;
+      j)
+        (( cur < total - 1 )) && cur=$((cur + 1))
+        ;;
+      ' ')
+        if [[ $cur -eq 0 ]]; then
+          # Toggle "All remotes"
+          if [[ ${sel[0]} -eq 0 ]]; then
+            sel[0]=1
+            for ((i=0; i<n; i++)); do
+              [[ "${synced[$i]}" == "no" ]] && sel[$((i+1))]=1
+            done
+          else
+            for ((i=0; i<total; i++)); do sel[$i]=0; done
+          fi
+        else
+          local idx=$((cur - 1))
+          if [[ "${synced[$idx]}" == "no" ]]; then
+            sel[$cur]=$(( 1 - sel[$cur] ))
+            # Auto-update "All" checkbox
+            local all_on=true
+            for ((i=0; i<n; i++)); do
+              if [[ "${synced[$i]}" == "no" && ${sel[$((i+1))]} -eq 0 ]]; then
+                all_on=false; break
+              fi
+            done
+            if $all_on; then sel[0]=1; else sel[0]=0; fi
+          fi
+        fi
+        ;;
+      ''|$'\n')
+        break
+        ;;
+      q|Q)
+        tput cnorm 2>/dev/null
+        echo "" >&2
+        return 1
+        ;;
+    esac
+
+    printf "\033[%dA" "$redraw_up" >&2
+    _draw_sync_picker
+  done
+
+  tput cnorm 2>/dev/null
+
+  local result=()
+  for ((i=0; i<n; i++)); do
+    [[ ${sel[$((i+1))]} -eq 1 ]] && result+=("${remotes[$i]}")
+  done
+
+  if [[ ${#result[@]} -eq 0 ]]; then
+    echo "" >&2
+    return 1
+  fi
+
+  echo "${result[*]}"
+}
+
+do_remote_sync() {
+  local selected
+  selected=$(pick_sync_targets) || { wait_for_key; return; }
+
+  echo ""
+  for rname in $selected; do
+    run_script remote-sync.sh --sync "$rname" || true
+  done
+}
+
+do_remote() {
+  echo ""
+  echo -e "  ${BOLD}Remote Sync${RESET}" >&2
+  echo "" >&2
+
+  # Auto-show detailed status for all remotes
+  run_script remote-sync.sh --list || true
+
+  echo "" >&2
+  echo -e "  ${BOLD}1${RESET}  Add a remote" >&2
+  echo -e "  ${BOLD}2${RESET}  Remove a remote" >&2
+  echo -e "  ${BOLD}3${RESET}  Sync" >&2
+  echo -e "  ${BOLD}q${RESET}  Back" >&2
+  echo "" >&2
+  read -rp "  > " remote_choice
+
+  case "$remote_choice" in
+    1) do_remote_add ;;
+    2) do_remote_remove ;;
+    3) do_remote_sync ;;
+    *) echo -e "  ${DIM}Back.${RESET}" ;;
+  esac
+
+  wait_for_key
+}
+
+do_certs() {
+  echo ""
+  echo -e "  ${BOLD}Certificates${RESET}" >&2
+  echo "" >&2
+  echo -e "  ${BOLD}1${RESET}  Issue a new server cert" >&2
+  echo -e "  ${BOLD}2${RESET}  Renew a server cert ${DIM}(keep existing server.key)${RESET}" >&2
+  echo -e "  ${BOLD}3${RESET}  Re-issue a server cert ${DIM}(new server.key + cert)${RESET}" >&2
+  echo -e "  ${BOLD}4${RESET}  Rotate CA + all server certs" >&2
+  echo -e "  ${BOLD}q${RESET}  Back" >&2
+  echo "" >&2
+  read -rp "  > " cert_choice
+
+  case "$cert_choice" in
+    1) do_issue ;;
+    2) do_renew ;;
+    3) do_reissue ;;
+    4) do_rotate ;;
+    *) echo -e "  ${DIM}Back.${RESET}" ;;
+  esac
+}
+
 # ── Main loop ────────────────────────────────────────────────────────
 
 while true; do
@@ -555,13 +914,11 @@ while true; do
 
   case "$choice" in
     1) do_init_ca ;;
-    2) do_issue ;;
-    3) do_renew ;;
-    4) do_reissue ;;
-    5) do_rotate ;;
-    6) do_verify ;;
-    7) do_nuke ;;
-    8) do_trust ;;
+    2) do_certs ;;
+    3) do_verify ;;
+    4) do_trust ;;
+    5) do_remote ;;
+    6) do_nuke ;;
     q|Q) echo ""; exit 0 ;;
     *) echo -e "  ${RED}Invalid choice.${RESET}"; sleep 1 ;;
   esac

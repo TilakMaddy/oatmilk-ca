@@ -18,6 +18,11 @@ That's it. The interactive guide walks you through everything:
 6. **Verify** a server cert
 7. **Nuke** certs and keys
 8. **Trust / Untrust** the CA in your system trust store
+9. **Remote sync** — push certs to SSH targets
+
+## Remote Sync
+
+Option 9 lets you register SSH targets and push all certs (CA + every server) to them at `/etc/oatmilk/certs/`. You can add, remove, list, sync one, or sync all remotes. Uses `ssh` + `scp` — no `rsync` dependency.
 
 ## Browser Trust
 
@@ -34,7 +39,8 @@ Firefox uses its own NSS store — import `oatca/ca.crt` manually via Settings >
 ## Tests
 
 ```sh
-bash scripts/test-certs.sh
+./run_tests.sh                       # run all tests
+./run_tests.sh test-remote-sync.sh   # run one suite
 ```
 
-Runs in an isolated temp directory — never touches real certs.
+Tests live in `tests/` and run in an isolated temp directory — never touches real certs.
