@@ -9,7 +9,6 @@ REMOTES_DIR="$BASE_DIR/remotes"
 
 # Allow test overrides for SSH/SCP commands
 SSH_CMD="${_REMOTE_SYNC_SSH_CMD:-ssh}"
-SCP_CMD="${_REMOTE_SYNC_SCP_CMD:-scp}"
 
 REMOTE_CERT_DIR="/etc/oatmilk/certs"
 
@@ -62,19 +61,6 @@ build_ssh_opts() {
   opts+=(-o "ConnectTimeout=10")
   if [[ -n "${PORT:-}" && "$PORT" != "22" ]]; then
     opts+=(-p "$PORT")
-  fi
-  if [[ -n "${KEY:-}" ]]; then
-    opts+=(-i "$KEY")
-  fi
-  echo "${opts[@]}"
-}
-
-build_scp_opts() {
-  local opts=()
-  opts+=(-o "StrictHostKeyChecking=accept-new")
-  opts+=(-o "ConnectTimeout=10")
-  if [[ -n "${PORT:-}" && "$PORT" != "22" ]]; then
-    opts+=(-P "$PORT")
   fi
   if [[ -n "${KEY:-}" ]]; then
     opts+=(-i "$KEY")
@@ -146,17 +132,18 @@ verify_remote_hash() {
   ssh_opts=$(build_ssh_opts)
 
   # SSH into the remote and compute hash of cert files (sorted for consistency)
+  # Uses sudo since cert dir is typically root-owned (/etc/oatmilk)
   # shellcheck disable=SC2086
   $SSH_CMD $ssh_opts "$host" "
-    if [ ! -f '$REMOTE_CERT_DIR/ca.crt' ]; then
+    if ! sudo test -f '$REMOTE_CERT_DIR/ca.crt'; then
       echo 'NO_CERTS'
       exit 0
     fi
     {
-      cat '$REMOTE_CERT_DIR/ca.crt'
-      for sname in \$(ls -1 '$REMOTE_CERT_DIR' | sort); do
-        if [ -f '$REMOTE_CERT_DIR/'\"\$sname\"'/server.crt' ] && [ -f '$REMOTE_CERT_DIR/'\"\$sname\"'/server.key' ]; then
-          cat '$REMOTE_CERT_DIR/'\"\$sname\"'/server.crt' '$REMOTE_CERT_DIR/'\"\$sname\"'/server.key'
+      sudo cat '$REMOTE_CERT_DIR/ca.crt'
+      for sname in \$(sudo ls -1 '$REMOTE_CERT_DIR' | sort); do
+        if sudo test -f '$REMOTE_CERT_DIR/'\"\$sname\"'/server.crt' && sudo test -f '$REMOTE_CERT_DIR/'\"\$sname\"'/server.key'; then
+          sudo cat '$REMOTE_CERT_DIR/'\"\$sname\"'/server.crt' '$REMOTE_CERT_DIR/'\"\$sname\"'/server.key'
         fi
       done
     } | shasum -a 256 | cut -d' ' -f1
@@ -256,32 +243,31 @@ do_sync() {
   fi
 
   # Build SSH/SCP options
-  local ssh_opts scp_opts
+  local ssh_opts
   ssh_opts=$(build_ssh_opts)
-  scp_opts=$(build_scp_opts)
 
   echo "==> Syncing to '$name' ($HOST)..."
 
-  # Create remote directories
+  # Create remote directories (sudo for /etc paths)
   local dirs=("$REMOTE_CERT_DIR")
   for sname in "${server_names[@]}"; do
     dirs+=("$REMOTE_CERT_DIR/$sname")
   done
 
   # shellcheck disable=SC2086
-  $SSH_CMD $ssh_opts "$HOST" "mkdir -p ${dirs[*]}"
+  $SSH_CMD $ssh_opts "$HOST" "sudo mkdir -p ${dirs[*]}"
 
-  # Copy CA cert
+  # Copy CA cert via ssh+sudo tee (scp can't write to root-owned paths)
   # shellcheck disable=SC2086
-  $SCP_CMD $scp_opts "$CA_DIR/ca.crt" "$HOST:$REMOTE_CERT_DIR/ca.crt"
+  cat "$CA_DIR/ca.crt" | $SSH_CMD $ssh_opts "$HOST" "sudo tee $REMOTE_CERT_DIR/ca.crt > /dev/null"
   echo "    CA cert → $REMOTE_CERT_DIR/ca.crt"
 
   # Copy server certs
   for sname in "${server_names[@]}"; do
     # shellcheck disable=SC2086
-    $SCP_CMD $scp_opts "$SERVERS_DIR/$sname/server.crt" "$HOST:$REMOTE_CERT_DIR/$sname/server.crt"
+    cat "$SERVERS_DIR/$sname/server.crt" | $SSH_CMD $ssh_opts "$HOST" "sudo tee $REMOTE_CERT_DIR/$sname/server.crt > /dev/null"
     # shellcheck disable=SC2086
-    $SCP_CMD $scp_opts "$SERVERS_DIR/$sname/server.key" "$HOST:$REMOTE_CERT_DIR/$sname/server.key"
+    cat "$SERVERS_DIR/$sname/server.key" | $SSH_CMD $ssh_opts "$HOST" "sudo tee $REMOTE_CERT_DIR/$sname/server.key > /dev/null && sudo chmod 600 $REMOTE_CERT_DIR/$sname/server.key"
     echo "    $sname → $REMOTE_CERT_DIR/$sname/"
   done
 

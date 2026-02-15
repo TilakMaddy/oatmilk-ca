@@ -742,7 +742,7 @@ pick_sync_targets() {
     if [[ "${synced[$i]}" == "no" ]]; then sel[$((i+1))]=1; fi
   done
 
-  tput civis 2>/dev/null   # hide cursor
+  tput civis >&2 2>/dev/null   # hide cursor
 
   echo "" >&2
   echo -e "  ${BOLD}Select remotes to sync${RESET}" >&2
@@ -823,7 +823,7 @@ pick_sync_targets() {
         break
         ;;
       q|Q)
-        tput cnorm 2>/dev/null
+        tput cnorm >&2 2>/dev/null
         echo "" >&2
         return 1
         ;;
@@ -833,7 +833,7 @@ pick_sync_targets() {
     _draw_sync_picker
   done
 
-  tput cnorm 2>/dev/null
+  tput cnorm >&2 2>/dev/null
 
   local result=()
   for ((i=0; i<n; i++)); do

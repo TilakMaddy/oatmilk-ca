@@ -31,7 +31,7 @@ while [[ \$# -gt 0 ]]; do
   esac
 done
 cmd="\$*"
-cmd=\$(echo "\$cmd" | sed "s|/etc/oatmilk|$FAKE_REMOTE|g")
+cmd=\$(echo "\$cmd" | sed "s|/etc/oatmilk|$FAKE_REMOTE|g; s|sudo ||g")
 eval "\$cmd"
 MOCK_SSH
 chmod +x "$MOCK_BIN/mock-ssh"
@@ -42,30 +42,6 @@ cat > "$MOCK_BIN/mock-ssh-fail" <<'MOCK_SSH_FAIL'
 exit 255
 MOCK_SSH_FAIL
 chmod +x "$MOCK_BIN/mock-ssh-fail"
-
-# Mock SCP: parse "src user@host:dest" and do a local copy
-cat > "$MOCK_BIN/mock-scp" <<MOCK_SCP
-#!/usr/bin/env bash
-SRC=""
-DEST=""
-while [[ \$# -gt 0 ]]; do
-  case "\$1" in
-    -o|-P|-i) shift 2 ;;
-    *)
-      if [[ -z "\$SRC" ]]; then
-        SRC="\$1"
-      else
-        DEST="\$1"
-      fi
-      shift
-      ;;
-  esac
-done
-REMOTE_PATH="\${DEST#*:}"
-LOCAL_DEST=\$(echo "\$REMOTE_PATH" | sed "s|/etc/oatmilk|$FAKE_REMOTE|g")
-cp "\$SRC" "\$LOCAL_DEST"
-MOCK_SCP
-chmod +x "$MOCK_BIN/mock-scp"
 
 # T43: --add creates remote.conf
 output=$(run_output "$S/remote-sync.sh" --add prod --host root@192.168.1.10)
@@ -131,11 +107,10 @@ fi
 output=$(run_output "$S/remote-sync.sh" --remove ghost)
 assert_contains "$output" "not found" "--remove non-existent remote fails"
 
-# T53: --sync copies CA cert (mocked SSH/SCP)
+# T53: --sync copies CA cert (mocked SSH)
 rm -rf "$FAKE_REMOTE"/*
 output=$(
   _REMOTE_SYNC_SSH_CMD="$MOCK_BIN/mock-ssh" \
-  _REMOTE_SYNC_SCP_CMD="$MOCK_BIN/mock-scp" \
   run_output "$S/remote-sync.sh" --sync prod
 )
 assert_file_exists "$FAKE_REMOTE/certs/ca.crt" "--sync copies CA cert"
@@ -220,7 +195,6 @@ assert_contains "$output" "Remote:  unreachable" "--list shows Remote: unreachab
 rm -rf "$FAKE_REMOTE"/*
 output=$(
   _REMOTE_SYNC_SSH_CMD="$MOCK_BIN/mock-ssh" \
-  _REMOTE_SYNC_SCP_CMD="$MOCK_BIN/mock-scp" \
   run_output "$S/remote-sync.sh" --sync prod
 )
 rm -rf "$FAKE_REMOTE/certs"
