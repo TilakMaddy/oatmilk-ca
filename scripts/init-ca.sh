@@ -63,6 +63,12 @@ subjectAltName = @alt_names
 [alt_names]
 DNS.1 = oatmilk.work
 DNS.2 = *.oatmilk.work
+DNS.3 = backoffice.oatmilk.work
+DNS.4 = *.backoffice.oatmilk.work
+DNS.5 = remote.backoffice.oatmilk.work
+DNS.6 = *.remote.backoffice.oatmilk.work
+DNS.7 = home.backoffice.oatmilk.work
+DNS.8 = *.home.backoffice.oatmilk.work
 CNFEOF
   echo "    Created $CA_DIR/san_ca.cnf"
   echo "    Edit this file if you need to change the CA's distinguished name."
